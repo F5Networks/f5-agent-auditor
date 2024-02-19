@@ -247,10 +247,6 @@ def diff(ac, bp):
             if k in constants.EXCLUSIVE_KEYS:
                 continue
 
-            # pzhang debug
-            # if k == "interfaces":
-            #     import pdb; pdb.set_trace()
-
             df = diff(ac[k], bp[k])
             if df:
                 ret[k] = df

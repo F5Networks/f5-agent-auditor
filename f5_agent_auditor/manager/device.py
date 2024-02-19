@@ -168,22 +168,22 @@ class Device(object):
         local_link_info = device_group_config.get("local_link_information", [])
         if not local_link_info:
             raise Exception(
-                "Can not find local_link_info in agent %s" % self.agent
+                "Can not find local_link_info in device %s" % self.device_group
             )
         else:
             vtep_ip = local_link_info[0].get("node_vtep_ip")
             if not vtep_ip:
                 raise Exception(
-                    "Can not find vtep_ip in local_link_info of agent %s" %
-                    self.agent
+                    "Can not find vtep_ip in local_link_info in device %s" %
+                    self.device_group
                 )
             self.node_vtep_ip = vtep_ip
 
         masquerade_mac = device_group_config.get("masquerade_mac")
         if not masquerade_mac:
             raise Exception(
-                "Can not find querade_mac in agent %s" %
-                self.agent
+                "Can not find querade_mac in device %s" %
+                self.device_group
             )
         self.masquerade_mac = masquerade_mac
 

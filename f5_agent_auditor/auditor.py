@@ -70,6 +70,7 @@ def missing_vlan(partition, vlans, lb_dicts,
     LOG.debug("Found vlan in DB: %s" % pformat(vlans))
     LOG.debug("Found vlan in Bigip: %s" % pformat(partition_vlans))
 
+    # check vlan name with id [u'vlan-53', u'vlan-931']
     missing_vlans = expect(vlans.keys(), partition_vlans)
     missing_vlan_lbs = tracer.get_lbs_by_vlans(
         missing_vlans, vlans, lbs)
@@ -92,6 +93,7 @@ def missing_rd(partition, rds, lb_dicts,
     LOG.debug("Found route domain in DB: %s" % pformat(rds))
     LOG.debug("Found route domain in Bigip: %s" % pformat(partition_rds))
 
+    # check rds network id ['CORE_bc14ad81-e5f1-481d-8d40-35dab06b9672']
     missing_rds = expect(rds.keys(), partition_rds)
     missing_rd_lbs = tracer.get_lbs_by_rds(
         missing_rds, rds, lbs)
@@ -115,6 +117,7 @@ def missing_gateway(partition, gateways, lb_dicts,
     LOG.debug("Found gateway in DB: %s" % pformat(gateways))
     LOG.debug("Found gateway in Bigip: %s" % pformat(partition_gws))
 
+    # check gateway name ['IPv4_default_route_931']
     missing_gateways = expect(gateways.keys(), partition_gws)
     missing_gateway_lbs = tracer.get_lbs_by_gws(
         missing_gateways, gateways, lbs)
@@ -138,6 +141,7 @@ def missing_selfip(partition, selfips, lb_dicts,
     LOG.debug("Found selfip in DB: %s" % pformat(selfips))
     LOG.debug("Found selfip in Bigip: %s" % pformat(partition_selfips))
 
+    # check selfip name ['local-bigip-hw-1.lab.beijing-f10f333d-5f22-44c5-ba26-72d24133efbe']
     missing_selfips = expect(
         selfips.keys(), partition_selfips)
     missing_selfip_lbs = tracer.get_lbs_by_selfips(
@@ -691,8 +695,8 @@ def main():
         diff_lbs = device_config_diff(
             group_id, device_ids, lbaas_manager, tracer)
 
-    # generate_rebuild_script(global_missing, diff_lbs)
-    generate_rebuild_script(global_missing)
+    generate_rebuild_script(global_missing, diff_lbs)
+    # generate_rebuild_script(global_missing)
 
 
 def device_config_diff(
@@ -732,8 +736,8 @@ def device_config_diff(
     # ac_config = active_mgr.get_dev_config_of("selfip")
     # bp_config = backup_mgr.get_dev_config_of("route")
 
-    filepath = "/tmp/" + "diff-" + active_mgr.device["mgmt_ipv4"] + \
-        "-" + backup_mgr.device["mgmt_ipv4"]
+    hosts_name = active_mgr.device["mgmt_ipv4"] + "_" + backup_mgr.device["mgmt_ipv4"]
+    filepath = "/tmp/" + "diff_" + utils.timestamp_filename(hosts_name)
     diff = {}
     diff_lbs = {}
 

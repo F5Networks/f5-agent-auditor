@@ -44,10 +44,6 @@ MONITOR_RESOURCES = [
     "http_monitor", "https_monitor", "tcp_monitor", "ping_monitor"
 ]
 
-SPEC_RESOURCES = [
-    "selfip", "pool", "member"
-]
-
 EXCLUSIVE_KEYS = [
     "ifIndex", "generation", "creationTime",
     "lastModifiedTime", "vsIndex", "ifIndex",
