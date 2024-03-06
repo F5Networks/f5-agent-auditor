@@ -1,250 +1,245 @@
-Quickstart
-==========
+BIG-IP配置补齐和NG Auditor 需求分析
+ 
+**主要输入：**
 
-Description:
-------------
 
-``f5-agent-auditor`` 主要用于检查审计公有云 9.9-stable
-``f5-openstack-agent`` 在 ``Neutron DB`` 中创建的资源和其下发到 BigIP
-上的资源是否一致。
+1.	Auditor 会以命令行的方式运行
+2.	Auditor 会抓取 Neutron DB，DB 建立连接需要的信息，通过命令行提供 /etc/neutron/neutron.conf 配置文件寻找 connection 配置。
+3.	Auditor 会抓取 Bigip 上数据，Bigip 连接需要的加密 username，password。通过 Neutron DB 中 lbaas_loadbalanceragentbindings, lbaas_devices 和 lbaas_device_members  中信息定位，如果 management IP 存在双栈，初步版本只支持 IPv4 management IP。
+4.	Auditor 产生 Bash script 需要 keystone admin 角色调用lbaas rebuild 命令，admin rc 文件需要通过命令行提供。
 
-检查资源的范围包含：
+**检查有无的配置粒度包含以下资源（针对单机不在线，创建删除资源双机不一致状况）：**
 
--  ``BigIP partiton (Openstack project)``
 
--  ``BigIP vip (Openstack loadbalancer)``
+tenant（partition）， loadbalancer （vip），snatpool（pool 级别），selfip，vlan，route domain，route（gateway），listener（vs），pool，pool member，pool healthmonitor，l7rule (irule)。
 
--  ``BigIP vs (Openstack listener)``
+**主备 bigip 互比（属性配置）的粒度包含以下资源（针对单机不在线，mutable 可更改资源更新不一致的状况）：**
 
--  ``BigIP pool (Openstack pool)``
 
--  ``BigIP pool mebmer (Openstack pool member)``
+virtual_address, snatpool, cookie_persistence, universal_persistence, sip_persistence, source_addr_persistence, http_profile, tcp_profile, http2_profile, client_ssl_profile, cipher_group, cipher_rule, bwc_policy, l7policy, http_monitor, https_monitor, tcp_monitor, ping_monitor, pool, member
 
-检查 loadbalancer 资源关联的:
+**运行命令：** 
 
--  ``BigIP selfip``
 
--  ``BigIP vlan``
+`f5-agent-auditor --config-file /etc/neutron/neutron.conf --rcfile-path /root/pzhang/pzhang.rc --rebuild --nodebug`
 
--  ``BigIP route domain``
+**主要输出：**
 
-命令 ``默认`` 或者带有 ``--net "L3"`` 情况下检查 gateway 和 L3 的 member.
-在命令带 ``--net "L2"`` 情况下不检查 gateway，只检查 L2 的 member.
 
--  ``BigIP gateway``
+1.	审计结果有无和差异资源信息会输出在 /tmp 目录中。
+2.	Rebuild Bash 脚本会输出在 /tmp 目录中。
+3.	Rebuild Bash 脚本运行 log 会输出在 /tmp 目录中。
+4.	Auditor 本身运行可以使用选择输出在屏幕或者文件中。
 
--  ``BigIP pool mebmer (Openstack pool member)``
+**Auditor的审计文件记录内容：**
 
-检查级别：
 
-每次检查 ``f5-agent-auditor`` 需要指定 ``agent id``
-（\ ``--f5-agent``\ ）作为命令参数，\ ``f5-agent-auditor`` 会检查
-``agent id`` 指定的 agent 在 BigIP 上创建的所有资源。通常情况下一个
-``agent id`` 对应一个 Neutron LBaaS 的
-``service provider``\ ，也可以理解为\ ``f5-agent-auditor`` 会检查
-``agent id`` 指定的 ``service provider`` 创建的所有资源。
+1.	有无： missing 和 unknown 文件。
+2.	差异： diff 文件。
 
-Installation
-------------
+**审计文件名称：missing_<bigip-ip>_<timestamp>**
 
-安装方式主要提供从原码安装和使用 ``pip`` 命令从 ``PYPI``\ 库安装。
 
-建议 python ``setuptools`` 模块版本大于 **30.3.0**:
+用于记录Bigip 上缺失的 lbaas 配置和其关联的 loadbalancer。
+审计文件内容：
 
-.. code:: bash
+```
+{
+    "<agent-id>": {
+        "<project-id>": {
+            "<missing-resource-name>": [
+                "<missing-resource-related-loadbalancers>",
+                "<missing-resource-related-loadbalancers>",
+                ...
+            ]
+        }
+}，
+	    "<agent-id>": {
+        "<project-id>": {
+            "<missing-resource-name>": {
+                "<missing-resource-related-loadbalancers>",
+            }
+        }
+},
+…
+}
+```
+	
+**Rebuild all Bash 脚本文件名称：rebuild_all_<timestamp>.sh**
 
-   # 使用以下任何命令都可以查看 setuptools 版本
-   [stack@neutron-server-1 f5-agent-auditor]$ easy_install --version
-   setuptools 44.1.1 from /usr/lib/python2.7/site-packages (Python 2.7)
 
-   [stack@neutron-server-1 f5-agent-auditor]$ python -m easy_install --version
-   setuptools 44.1.1 from /usr/lib/python2.7/site-packages (Python 2.7)
+Bash 脚本用于 rebuild loadbalancer。
+Rebuild all Bash 脚本文件内容：
 
-Install by source code
-~~~~~~~~~~~~~~~~~~~~~
+```
+#!/bin/bash
 
-.. code:: bash
+wait_until_loadbalancer () {
+  local LB=$1
+  local EXPECTED_STATUS=$2
+  local STATUS="unknown"
+  local timeout=60
 
-   # 从 github 上下载原码
-   git clone https://github.com/f5devcentral/f5-agent-auditor.git -b master
+  while [[ $STATUS != $EXPECTED_STATUS ]] && [[ $timeout -gt 0 ]] ; do
+    STATUS=$(neutron lbaas-loadbalancer-show $LB | grep provisioning_status | awk '{ print $4 }')
+    if [[ $STATUS == "ERROR" ]] ; then
+      echo "$(date): $LB is in $STATUS state."
+      return 1
+    fi
+    if [[ $STATUS != $EXPECTED_STATUS ]] ; then
+      sleep 1
+      ((timeout=timeout-1))
+    else
+      echo "$(date): $LB is in $STATUS state"
+      break
+    fi
+  done
 
-   # 转到源码目录下
-   cd f5-agent-auditor
-   # setup.py 安装。
-   sudo python setup.py install
+  if [[ $timeout -lt 0 ]]; then
+      echo "$(date): $LB rebuild checking timeout"
+  fi
+}
 
-Install by rpm
-~~~~~~~~~~~~~~~~~~~~~
+source /root/pzhang/pzhang.rc
 
-.. code:: bash
+logfile=/tmp/rebuild_$(date +%Y%m%d_%H%M%S).log
 
-   # 从 github 上下载 rpm
-   rpm -ivh f5-agent-auditor-0.1.0-1.noarch.rpm
+rm -rf $logfile
+touch $logfile
 
-   Preparing...                          ################################# [100%]
-   Updating / installing...
-      1:f5-agent-auditor-0.1.0-1         ################################# [100%]
 
-**以上安装方式使用任意一种即可**
 
-Uninstallation
---------------
 
-卸载可以直接使用 ``pip``\ 命令卸载
+neutron lbaas-loadbalancer-rebuild --all f7183210-25b2-435f-893a-d0ce66069181
+wait_until_loadbalancer f7183210-25b2-435f-893a-d0ce66069181 ACTIVE >> $logfile
 
-.. code:: bash
+rebuild all bash 运行后产生的 log 文件名称：rebuild_<timestamp>.log
+记录 rebuild bash 脚本执行结果。
+rebuild all bash 运行后 log 内容：
+Wed Dec 13 14:57:19 CST 2023: 616c92e2-12db-4327-8af7-fb223ade6e31 is in ACTIVE state
+Wed Dec 13 14:57:36 CST 2023: 0171629c-2fab-4109-8da8-c65024c7ac24 is in ACTIVE state
+Wed Dec 13 14:57:55 CST 2023: dac67cbf-c314-4500-9f81-b1ee4e13392c is in ACTIVE state
+Wed Dec 13 14:58:20 CST 2023: b0e33fa5-3625-4140-9733-4b3544a1f543 is in ACTIVE state
+…
+```
 
-   # 卸载 f5-agent-auditor
-   [stack@neutron-server-1 ~]$ sudo pip uninstall f5-agent-auditor
-   Uninstalling f5-agent-auditor-0.1.0:
-     /usr/bin/f5-agent-auditor
-     /usr/lib/python2.7/site-packages/f5-agent-auditor.egg-link
-   Proceed (y/n)? y
-     Successfully uninstalled f5-agent-auditor-0.1.0
+**审计文件名称：unknown_<bigip-ip>_<timestamp>**
 
-Execution
----------
 
-安装后，命令 ``f5-agent-auditor`` 会被安装到系统中.
+记录 Bigip 上多于 lbaas 配置的脏数据。
+审计文件内容：
 
-.. code:: bash
+```
+{
+    "Project_f00e925a7095432ca32ba528f2599b30": {},
+    "Project_6fd06a50b7824ae48386565786e94b38": {
+        "vlans": [
+            "unknown"
+        ],
+        "gateways": [
+            "tes"
+        ],
+        "rds": [
+            "ttt"
+        ],
+        "selfips": [
+            "disselfip"
+        ]
+    }
+}
+```
 
-   # 运行如下命令。
-   f5-agent-auditor --config-file /etc/neutron/services/f5/f5-openstack-agent-CORE.ini --config-file /etc/neutron/neutron.conf --net "L2" --f5-agent 1b4e247d-6c79-4d38-949f-91af99b10b2c
+**审计文件名称：diff_<active-bigip-ip>_<backup-bigip-ip>_<timestamp>**
 
-1. ``--f5-agent:``\ 指定需要检查审计的 ``F5 LBaaS Agent UUID``,
-   Openstack admin 用户可以使用 ``neutron agent-list`` 查看。
-2. ``--config-file:``\ 需要指定两个 file，
 
-   1. 一个是 neutron-server 的 ``neutron.conf`` 配置文件。
-   2. 一个是选取的 F5 LBaaS Agent 使用的 ``f5-openstack-agent.ini``
-      配置文件（比如 ``f5-openstack-agent-CORE.ini``\ ）。
+记录备机相对主机不一致的部分。
+审计文件内容:
 
-3. ``--nodebug:``\ 不打印 DEBUG LOG
+```
+{
+   "http2_profile": {},
+    "http_monitor": {},
+    "cipher_rule": {},
+    "cookie_persistence": {},
+    "l7policy": {},
+    "snatpool": {
+        "/Common/CORE_56137826-e1de-4e76-a67e-49e49a4cfa6a": {
+            "active": {
+                "kind": "tm:ltm:snatpool:snatpoolstate",
+                "name": "CORE_56137826-e1de-4e76-a67e-49e49a4cfa6a",
+                "generation": 1,
+                "partition": "Common",
+                "members": [
+                    "/Common/10.250.19.12%0",
+                    "/Common/10.250.19.21%0",
+                    "/Common/2005:db8:cafe:16::11%0"
+                ],
+                "membersReference": [
+                    {
+                        "link": "https://localhost/mgmt/tm/ltm/snat-translation/~Common~10.250.19.12%250?ver=15.1.10"
+                    },
+                    {
+                        "link": "https://localhost/mgmt/tm/ltm/snat-translation/~Common~10.250.19.21%250?ver=15.1.10"
+                    },
+                    {
+                        "link": "https://localhost/mgmt/tm/ltm/snat-translation/~Common~2005:db8:cafe:16::11%250?ver=15.1.10"
+                    }
+                ],
+                "fullPath": "/Common/CORE_56137826-e1de-4e76-a67e-49e49a4cfa6a",
+                "selfLink": "https://localhost/mgmt/tm/ltm/snatpool/~Common~CORE_56137826-e1de-4e76-a67e-49e49a4cfa6a?ver=15.1.10"
+            },
+            "backup": null
+        }
+    },
+    "virtual_address": {},
+    "cipher_group": {},
+    "http_profile": {},
+    "ping_monitor": {},
+    "source_addr_persistence": {},
+    "tcp_monitor": {},
+    "https_monitor": {},
+    "bwc_policy": {},
+    "tcp_profile": {},
+    "client_ssl_profile": {},
+    "sip_persistence": {},
+    "pool": {},
+    "universal_persistence": {}
+    …
+}
+```
 
-4. ``--net:``\ 选择检查 "L2" 或者 "L3" 模式的 member / gateway。
+**Auditor使用方式**
 
-.. code:: bash
 
-   # 将 neutron.conf debug 配置修改为 False，程序运行时可以输出比较简洁的 log，如下：
+命令行：	
 
-   [stack@neutron-server-1 f5-agent-auditor]$ f5-agent-auditor --config-file /etc/neutron/services/f5/f5-openstack-agent-CORE.ini --config-file /etc/neutron/neutron.conf --f5-agent 1b4e247d-6c79-4d38-949f-91af99b10b2c --nodebug
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get projects of agent : 1b4e247d-6c79-4d38-949f-91af99b10b2c in Neutron DB
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_projects_on_device takes 0.000581026077271 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get projects on device 10.145.67.245
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_projects_on_device takes 0.0221989154816 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get loadbalancers of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_loadbalancers takes 0.000296115875244 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get loadbalancers of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_loadbalancers takes 0.000241994857788 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get loadbalancers of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_loadbalancers takes 0.0236790180206 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get loadbalancers of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_loadbalancers takes 0.0187258720398 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get listeners of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_listeners takes 0.00666093826294 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get listeners of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_listeners takes 0.00414395332336 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get listeners of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_listeners takes 0.0253779888153 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get listeners of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_listeners takes 0.0208730697632 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Set pool members of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000219106674194 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] set_project_pool_members takes 0.0171270370483 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.0379309654236 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Set pool members of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000220060348511 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] set_project_pool_members takes 0.00769901275635 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.0190608501434 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0208911895752 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0172410011292 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000191926956177 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000253915786743 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0212268829346 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0178661346436 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get projects on device 10.145.75.98
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_projects_on_device takes 0.0180327892303 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get loadbalancers of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_loadbalancers takes 0.000180959701538 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get loadbalancers of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_loadbalancers takes 0.000140905380249 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get loadbalancers of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_loadbalancers takes 0.0210061073303 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get loadbalancers of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_loadbalancers takes 0.0160021781921 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get listeners of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_listeners takes 0.000160932540894 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get listeners of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_listeners takes 0.000134944915771 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get listeners of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_listeners takes 0.0203671455383 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get listeners of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_listeners takes 0.0223190784454 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000166177749634 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000140905380249 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0195679664612 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0202949047089 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000195026397705 seconds
-   INFO f5_agent_auditor.collector.lbaas_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.lbaas_collector [-] get_project_pools takes 0.000169992446899 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 346052548d924ee095b3c2a4f05244ac
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0196969509125 seconds
-   INFO f5_agent_auditor.collector.bigip_collector [-] Get pools of project: 57e89acdfb6e40a2bc7f6185645dbbdd
-   INFO f5_agent_auditor.collector.bigip_collector [-] get_project_pools takes 0.0193870067596 seconds
-   INFO f5_agent_auditor.auditor [-] main takes 0.994650840759 seconds
+`f5-agent-auditor --config-file /etc/neutron/neutron.conf --rcfile-path /root/pzhang/pzhang.rc --rebuild --nodebug`
 
-Evaluation
-----------
+* --config-file: 指定 neutron.conf 文件，主要是用了里面的 mysql connection配置。
 
-如果一个 F5 LBaaS Agent 控制多个 BigIP 机器（比如 HA 一对 BigIP
-设备），且 Neutron DB 中有些数据在某些 BigIP 检查不到，那么
-``f5-agent-auditor`` 程序运行完后，会在 Linux OS 的 ``/tmp`` 目录下产生
-``<bigip_hostname>.csv`` 文件，记录丢失的 resource 和其状态。如下：
+* --rcfile-path：指定admin 角色的 keystone RC 文件。
 
-.. code:: bash
+* --rebuild：指定自动运行 rebuild bash 脚本。如果带此参数，会自动运行auditor 生成的rebuild 脚本。
 
-   # 文件名称如下：
-   # /tmp/check_10.145.67.245.csv
-   # /tmp/check_10.145.75.98.csv
+* --nodebug：命令行运行情况下可以选择不输出部分 debug log。
 
-   [stack@neutron-server-1 f5-agent-auditor]$ cat /tmp/check_10.145.67.245.csv
-   resource type,uuid,provisioning status,project id,pool id,detail
-   loadbalancer,4a7ebe71-a13b-4257-bc3f-c67bba87bbb8,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   loadbalancer,76038dff-4438-4afa-9068-9c5905db8582,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   loadbalancer,36638069-1c7b-4a33-9fe5-5238f947793d,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   listener,8477ba31-0c52-477b-aba0-99babdb3f3c1,ERROR,346052548d924ee095b3c2a4f05244ac,,
-   listener,b015d913-c996-443f-b332-33146514341e,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   listener,9b0f0962-6455-43e0-86ee-50800d392243,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   pool,7640844c-115c-4145-869c-7e88d5b14c70,ACTIVE,57e89acdfb6e40a2bc7f6185645dbbdd,,
-   pool,061408d4-3d57-4317-8b35-8ee2eb3d2f18,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   pool,a32cf197-aef2-4c04-86ac-2f4fae825a79,ACTIVE,57e89acdfb6e40a2bc7f6185645dbbdd,,
-   pool,8755a316-b066-4194-b31c-91fec94c7d47,ACTIVE,346052548d924ee095b3c2a4f05244ac,,
-   member,856204a3-44aa-4669-929f-2104a0fc5124,ACTIVE,57e89acdfb6e40a2bc7f6185645dbbdd,7640844c-115c-4145-869c-7e88d5b14c70,"{'port': u'123', 'address': u'192.168.2.123'}"
-   member,ec27fb36-daec-4f96-beb8-b4fb50d5f0f4,ACTIVE,346052548d924ee095b3c2a4f05244ac,8755a316-b066-4194-b31c-91fec94c7d47,"{'port': u'124', 'address': u'172.168.2.124'}"
-   member,f157fcb0-77b2-47e4-9870-bb6574eba252,ACTIVE,346052548d924ee095b3c2a4f05244ac,8755a316-b066-4194-b31c-91fec94c7d47,"{'port': u'125', 'address': u'172.168.2.125'}"
-   member,0cb89299-4d18-4e18-bd77-ee4e2fedf166,ACTIVE,346052548d924ee095b3c2a4f05244ac,061408d4-3d57-4317-8b35-8ee2eb3d2f18,"{'port': u'123', 'address': u'172.168.1.213'}"
+Rebuild all bash 脚本手工运行/自动运行：
 
-   selfip,015bab54-8c0b-4851-83bf-221610cb94b8,,149f8173e0fc41a683f7df8e3984931d,,"{'network_id': 'ea03e734-94b8-4fe0-87fa-ec128d17090a', 'gateway_ip': '192.168.10.1', 'name': 'vip-subnet4', 'segment_id': 141, 'ip_version': 4, 'cidr': '192.168.10.0/24', 'project_id': '149f8173e0fc41a683f7df8e3984931d', 'id': '015bab54-8c0b-4851-83bf-221610cb94b8'}"
-   selfip,d489d6ee-adca-4339-9f57-72745693881c,,149f8173e0fc41a683f7df8e3984931d,,"{'network_id': 'ea03e734-94b8-4fe0-87fa-ec128d17090a', 'gateway_ip': '2020:0:1::1', 'name': 'vip-subnet6', 'segment_id': 141, 'ip_version': 6, 'cidr': '2020:0:1::/48', 'project_id': '149f8173e0fc41a683f7df8e3984931d', 'id': 'd489d6ee-adca-4339-9f57-72745693881c'}"
-   gateway,IPv6_default_route_141,,,,"{'network_id': 'ea03e734-94b8-4fe0-87fa-ec128d17090a', 'gateway_ip': '2020:0:1::1', 'name': 'vip-subnet6', 'segment_id': 141, 'ip_version': 6, 'cidr': '2020:0:1::/48', 'project_id': '149f8173e0fc41a683f7df8e3984931d', 'id': 'd489d6ee-adca-4339-9f57-72745693881c'}"
-   gateway,IPv4_default_route_141,,,,"{'network_id': 'ea03e734-94b8-4fe0-87fa-ec128d17090a', 'gateway_ip': '192.168.10.1', 'name': 'vip-subnet4', 'segment_id': 141, 'ip_version': 4, 'cidr': '192.168.10.0/24', 'project_id': '149f8173e0fc41a683f7df8e3984931d', 'id': '015bab54-8c0b-4851-83bf-221610cb94b8'}"
-   route domain,ea03e734-94b8-4fe0-87fa-ec128d17090a,,149f8173e0fc41a683f7df8e3984931d,,"{'status': 'ACTIVE', 'availability_zone_hints': '[]', 'name': 'vlan-vip', 'admin_state_up': 1, 'mtu': 1500, 'vlan_transparent': None, 'vlan_segment': 141, 'project_id': '149f8173e0fc41a683f7df8e3984931d', 'id': 'ea03e734-94b8-4fe0-87fa-ec128d17090a'}"
-   vlan,ea03e734-94b8-4fe0-87fa-ec128d17090a,,149f8173e0fc41a683f7df8e3984931d,,"{'status': 'ACTIVE', 'availability_zone_hints': '[]', 'name': 'vlan-vip', 'admin_state_up': 1, 'vlan_transparent': None, 'vlan_segment': 141, 'project_id': '149f8173e0fc41a683f7df8e3984931d', 'id': 'ea03e734-94b8-4fe0-87fa-ec128d17090a', 'mtu': 1500}"
 
-``<bigip_hostname>.csv`` 文件可以通过 ``Execel`` 打开查看，做后续整理。
+Rebuild bash 脚本可以通过 参数指定自动运行。如果不指定 参数，则需要在 bash 脚本产生后，手动到 /tmp 目录下运行 bash <rebuild_all.sh> 脚本。
+
+
+**命令行手动/自动运行**：
+
+
+可以手动运行 f5-agent-auditor 命令，也可以通过配置crontab 自动在某个时间运行f5-agent-auditor 命令。
+
+
+**执行和权限（包含自动化执行）**
+
+
+f5-agent-auditor： 需要用 linux root 或者 neutron linux user 级别的角色运行保障文件可执行，/tmp 文件可以读写 log，keystone admin rc file 可读，bash脚本可执行。
+
+Rebuild all bash 脚本：如果手动运行需要 linux root 或者 openstack linux user 级别的角色，可执行 neutron rebuild 命令，可读 keystone admin rc file 和在/tmp 目录下读写权限。
+
+命令行中 refile-path 提供的 rc 配置：需要是 keystone admin 角色，需要可以执行各个 loadbalancer rebuild 级别的命令。  
